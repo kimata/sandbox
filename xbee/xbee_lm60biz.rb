@@ -3,8 +3,9 @@
 
 require 'serialport'
 
+STDOUT.sync = true
 
-def xbee_api_parse_sample(buffer)
+def xbee_api_parse_data_sample(buffer)
   digital_sample = {}
   analog_sample = {}
   digital_index = []
@@ -42,28 +43,28 @@ def xbee_api_parse_sample(buffer)
   }
 end
 
-def xbee_api_parse_receive_packet(buffer)
-  packet = {}
+def xbee_api_parse_receive_packet(packet)
+  frame = {}
 
-  packet[:frame_type] = buffer[0].to_s(16).upcase
-  packet[:source_address] = buffer[1..8].pack("C*").unpack("H*")[0].upcase
-  packet[:network_address] = buffer[9..10].pack("C*").unpack("H*")[0].upcase
-  packet[:receive_options] = buffer[0].to_s(11).upcase
-  packet[:number_of_samples] = buffer[12]
-  packet[:sample_data] = xbee_api_parse_sample(buffer[13..(buffer.size-1)])
+  frame[:frame_type] = packet[0].to_s(16).upcase
+  frame[:source_address] = packet[1..8].pack("C*").unpack("H*")[0].upcase
+  frame[:network_address] = packet[9..10].pack("C*").unpack("H*")[0].upcase
+  frame[:receive_options] = packet[11]
+  frame[:number_of_samples] = packet[12]
 
-  return packet
+  return frame
 end
 
-def xbee_api_parse_io_data_sample_rx_indicator(buffer)
-  return xbee_api_parse_receive_packet(buffer)
+def xbee_api_parse_io_data_sample_rx_indicator(packet)
+  frame = xbee_api_parse_receive_packet(packet)
+  frame[:sample_data] = xbee_api_parse_data_sample(packet[13..(packet.size-1)])
+  return frame
 end
-
 
 class XBee
   def initialize(dev)
     @sp = SerialPort.new(dev, 9600, 8, 1,SerialPort::NONE)
-    @sp.flow_control = (SerialPort::SOFT | SerialPort::HARD)
+    @sp.flow_control = SerialPort::NONE
     @sp.read_timeout = 1000
     @buffer = []
   end
@@ -127,14 +128,23 @@ end
 xbee = XBee.new('/dev/ttyO4')
 
 def calc_temp(ad_value)
-  return ((ad_value * 1200) / 1023) * 0.16 - 67.867
+  return (((ad_value * 1200) / 1023) - 424) / 6.25
 end
 
+##################################################
+data = {}
 while (true)
   xbee.receive{|packet|
-    # p packet.map{|v| v.to_s(16) }
-    sample = xbee_api_parse_io_data_sample_rx_indicator(packet)
-    printf("%s: %.2f\n", sample[:source_address], calc_temp(sample[:sample_data][:analog][3]))
+    begin
+      frame = xbee_api_parse_io_data_sample_rx_indicator(packet)
 
+      printf("%s: temperature: %.2f℃ (battery: %s)\n",
+             frame[:source_address],
+             calc_temp(frame[:sample_data][:analog][3]),
+             (frame[:sample_data][:digital][5] == 1) ? 'OK' : 'NG')
+
+    rescue Exception => e
+      p e
+    end
   }
 end
